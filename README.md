@@ -23,8 +23,8 @@ It is built for the moment when a theme name is not enough information.
 You need macOS, Apple Terminal, Python 3, and [fzf](https://github.com/junegunn/fzf).
 
 ```sh
-git clone --recurse-submodules https://github.com/0-CYBERDYNE-SYSTEMS-0/terminal-theme-picker.git
-cd terminal-theme-picker
+git clone --recurse-submodules https://github.com/0-CYBERDYNE-SYSTEMS-0/macOS-terminal-theme-picker.git
+cd macOS-terminal-theme-picker
 python3 -m pip install -r requirements.txt
 python3 install.py
 ```
