@@ -5,6 +5,7 @@
 # Terminal Theme Picker
 
 Change the color theme of any open tab in the native macOS Terminal app at any time.
+(option+shift+P) Also in a menu bar icon whenever u need it.
 
 Terminal Theme Picker gives you an elegant interface to browse, preview, and apply a theme without stopping the program that is running there.
 
