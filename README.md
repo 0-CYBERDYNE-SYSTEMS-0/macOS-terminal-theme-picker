@@ -27,8 +27,6 @@ python3 -m pip install -r requirements.txt
 python3 install.py
 ```
 
-macOS will ask for Accessibility permission the first time the agent needs it. Allow the Python executable that you used for the install.
-
 The installer creates a per-user LaunchAgent. The small palette icon in the menu bar also opens the picker.
 
 ## Use the native picker

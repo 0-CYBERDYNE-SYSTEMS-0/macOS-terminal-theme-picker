@@ -3,6 +3,7 @@
 
 from __future__ import annotations
 
+import ctypes
 import re
 import subprocess
 import sys
@@ -10,7 +11,6 @@ import time
 from pathlib import Path
 
 import objc
-import Quartz
 
 from AppKit import (
     NSApp,
@@ -50,24 +50,41 @@ ROOT = Path(__file__).resolve().parent
 GENERIC_THEMES = ROOT / "vendor" / "iTerm2-Color-Schemes" / "generic"
 TERMINAL_THEMES = ROOT / "vendor" / "iTerm2-Color-Schemes" / "terminal"
 P_KEYCODE = 35
+CARBON = ctypes.CDLL("/System/Library/Frameworks/Carbon.framework/Carbon")
+EVENT_CLASS_KEYBOARD = int.from_bytes(b"keyb", "big")
+EVENT_HOTKEY_PRESSED = 5
+HOTKEY_SIGNATURE = int.from_bytes(b"TTPK", "big")
+SHIFT_KEY = 1 << 9
+OPTION_KEY = 1 << 11
+HOTKEY_EXCLUSIVE = 1
 
 
-def event_tap_callback(proxy, event_type, event, agent):
-    if event_type in (Quartz.kCGEventTapDisabledByTimeout, Quartz.kCGEventTapDisabledByUserInput):
-        Quartz.CGEventTapEnable(agent.event_tap, True)
-        return event
-    if event_type != Quartz.kCGEventKeyDown:
-        return event
-    flags = Quartz.CGEventGetFlags(event)
-    required = Quartz.kCGEventFlagMaskAlternate | Quartz.kCGEventFlagMaskShift
-    keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
-    if keycode == P_KEYCODE and flags & required == required:
-        # Do not change AppKit windows while Quartz is dispatching the key event.
-        # Queue this on the main application loop so the shortcut remains reliable
-        # after the panel closes and opens again.
-        agent.performSelectorOnMainThread_withObject_waitUntilDone_("showPicker:", None, False)
-        return None
-    return event
+class EventTypeSpec(ctypes.Structure):
+    _fields_ = [("eventClass", ctypes.c_uint32), ("eventKind", ctypes.c_uint32)]
+
+
+class EventHotKeyID(ctypes.Structure):
+    _fields_ = [("signature", ctypes.c_uint32), ("id", ctypes.c_uint32)]
+
+
+EventHandler = ctypes.CFUNCTYPE(ctypes.c_int32, ctypes.c_void_p, ctypes.c_void_p, ctypes.c_void_p)
+CARBON.GetApplicationEventTarget.restype = ctypes.c_void_p
+CARBON.InstallEventHandler.argtypes = [
+    ctypes.c_void_p,
+    EventHandler,
+    ctypes.c_uint32,
+    ctypes.POINTER(EventTypeSpec),
+    ctypes.c_void_p,
+    ctypes.POINTER(ctypes.c_void_p),
+]
+CARBON.RegisterEventHotKey.argtypes = [
+    ctypes.c_uint32,
+    ctypes.c_uint32,
+    EventHotKeyID,
+    ctypes.c_void_p,
+    ctypes.c_uint32,
+    ctypes.POINTER(ctypes.c_void_p),
+]
 
 
 class Theme:
@@ -304,22 +321,36 @@ class Agent(NSObject):
         self.table.selectRowIndexes_byExtendingSelection_(NSIndexSet.indexSetWithIndex_(0), False)
 
     def install_hotkey(self):
-        self.event_tap = Quartz.CGEventTapCreate(
-            Quartz.kCGSessionEventTap,
-            Quartz.kCGHeadInsertEventTap,
-            Quartz.kCGEventTapOptionDefault,
-            Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown),
-            event_tap_callback,
-            self,
+        self.hotkey_handler = EventHandler(self.hotkey_pressed)
+        event_type = EventTypeSpec(EVENT_CLASS_KEYBOARD, EVENT_HOTKEY_PRESSED)
+        self.hotkey_handler_ref = ctypes.c_void_p()
+        target = CARBON.GetApplicationEventTarget()
+        status = CARBON.InstallEventHandler(
+            target,
+            self.hotkey_handler,
+            1,
+            ctypes.byref(event_type),
+            None,
+            ctypes.byref(self.hotkey_handler_ref),
         )
-        if self.event_tap is None:
-            self.message.setStringValue_("Grant Accessibility access to enable Option-Shift-P.")
+        if status:
+            self.message.setStringValue_(f"Could not install Option-Shift-P ({status}).")
             return
-        self.event_source = Quartz.CFMachPortCreateRunLoopSource(None, self.event_tap, 0)
-        Quartz.CFRunLoopAddSource(
-            Quartz.CFRunLoopGetCurrent(), self.event_source, Quartz.kCFRunLoopCommonModes
+        self.hotkey_ref = ctypes.c_void_p()
+        status = CARBON.RegisterEventHotKey(
+            P_KEYCODE,
+            SHIFT_KEY | OPTION_KEY,
+            EventHotKeyID(HOTKEY_SIGNATURE, 1),
+            target,
+            HOTKEY_EXCLUSIVE,
+            ctypes.byref(self.hotkey_ref),
         )
-        Quartz.CGEventTapEnable(self.event_tap, True)
+        if status:
+            self.message.setStringValue_(f"Option-Shift-P is unavailable ({status}).")
+
+    def hotkey_pressed(self, next_handler, event, user_data):
+        self.showPicker_(None)
+        return 0
 
     def showPicker_(self, sender):
         try:
