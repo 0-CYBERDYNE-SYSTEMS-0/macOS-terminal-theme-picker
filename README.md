@@ -8,6 +8,8 @@ A native macOS color browser for Apple Terminal. Search a large catalog, inspect
 
 It is built for the moment when a theme name is not enough information.
 
+![Terminal Theme Picker with the Atom One Dark preview](assets/theme-picker-ui.png)
+
 ## What it does
 
 - Shows 606 Apple Terminal-compatible themes from the iTerm2-Color-Schemes catalog.
