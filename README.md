@@ -4,9 +4,9 @@
 
 # Terminal Theme Picker
 
-A native macOS color browser for Apple Terminal. Search a large catalog, inspect the full ANSI palette and syntax sample, then apply the theme to the Terminal tab you use now.
+Change the color theme of any open tab in the native macOS Terminal app at any time.
 
-It is built for the moment when a theme name is not enough information.
+Terminal Theme Picker gives you an elegant interface to browse, preview, and apply a theme without stopping the program that is running there.
 
 ![Terminal Theme Picker with the Atom One Dark preview](assets/theme-picker-ui.png)
 
