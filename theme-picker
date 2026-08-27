@@ -1,0 +1,200 @@
+#!/usr/bin/env python3
+"""Select and apply a color profile to the Apple Terminal tab that starts this program."""
+
+from __future__ import annotations
+
+import re
+import shlex
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+
+ROOT = Path(__file__).resolve().parent
+GENERIC_THEMES = ROOT / "vendor" / "iTerm2-Color-Schemes" / "generic"
+TERMINAL_THEMES = ROOT / "vendor" / "iTerm2-Color-Schemes" / "terminal"
+ANSI = "\x1b["
+
+
+def colors_from_theme(path: Path) -> tuple[list[str], str, str] | None:
+    values: dict[int, str] = {}
+    foreground = "ffffff"
+    background = "000000"
+    for line in path.read_text(errors="replace").splitlines():
+        match = re.match(r'^put_template\s+(\d+)\s+"([0-9a-fA-F/]+)"', line)
+        if match:
+            values[int(match.group(1))] = match.group(2).replace("/", "")
+            continue
+        match = re.match(r'^color_(foreground|background)="([0-9a-fA-F/]+)"', line)
+        if match:
+            if match.group(1) == "foreground":
+                foreground = match.group(2).replace("/", "")
+            else:
+                background = match.group(2).replace("/", "")
+    if set(values) != set(range(16)):
+        return None
+    return [values[index] for index in range(16)], foreground, background
+
+
+def blocks(colors: list[str]) -> str:
+    output = []
+    for color in colors:
+        red, green, blue = (int(color[index:index + 2], 16) for index in (0, 2, 4))
+        output.append(f"{ANSI}48;2;{red};{green};{blue}m  {ANSI}0m")
+    return "".join(output)
+
+
+def color_block(color: str, width: int = 18) -> str:
+    red, green, blue = (int(color[index:index + 2], 16) for index in (0, 2, 4))
+    return f"{ANSI}48;2;{red};{green};{blue}m{' ' * width}{ANSI}0m"
+
+
+def theme_preview(name: str) -> str:
+    parsed = colors_from_theme(GENERIC_THEMES / f"{name}.sh")
+    if parsed is None:
+        return "Theme preview is not available."
+
+    colors, foreground, background = parsed
+    foreground_red, foreground_green, foreground_blue = (
+        int(foreground[index:index + 2], 16) for index in (0, 2, 4)
+    )
+    background_red, background_green, background_blue = (
+        int(background[index:index + 2], 16) for index in (0, 2, 4)
+    )
+    sample = (
+        f"{ANSI}48;2;{background_red};{background_green};{background_blue};"
+        f"38;2;{foreground_red};{foreground_green};{foreground_blue}m"
+        "  $ printf 'Readable sample text and color output'                       "
+        f"{ANSI}0m"
+    )
+    return "\n".join(
+        [
+            f"  Theme: {name}",
+            "",
+            f"  Background  {color_block(background)}  #{background.upper()}",
+            f"  Text        {color_block(foreground)}  #{foreground.upper()}",
+            f"  ANSI white  {color_block(colors[7])}  #{colors[7].upper()}",
+            "",
+            f"  Normal      {blocks(colors[:8])}",
+            f"  Bright      {blocks(colors[8:])}",
+            "",
+            f"  {sample}",
+        ]
+    )
+
+
+def terminal_tab_tty() -> str:
+    return run_applescript(
+        'tell application "Terminal" to get tty of selected tab of front window'
+    ).strip()
+
+
+def run_applescript(script: str) -> str:
+    result = subprocess.run(
+        ["osascript", "-e", script], text=True, capture_output=True, check=False
+    )
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "AppleScript failed")
+    return result.stdout
+
+
+def applescript_string(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def install_profile(name: str, source: Path) -> None:
+    existing = run_applescript(
+        'tell application "Terminal" to get name of every settings set'
+    )
+    if name in {item.strip() for item in existing.split(",")}:
+        return
+
+    subprocess.run(["open", "-g", "-a", "Terminal", str(source)], check=True)
+    for _ in range(25):
+        existing = run_applescript(
+            'tell application "Terminal" to get name of every settings set'
+        )
+        if name in {item.strip() for item in existing.split(",")}:
+            return
+        time.sleep(0.2)
+    raise RuntimeError(f"Terminal did not import {name}.")
+
+
+def apply_profile(name: str, tty: str) -> None:
+    script = f"""
+tell application "Terminal"
+  repeat with terminalWindow in windows
+    repeat with terminalTab in tabs of terminalWindow
+      if tty of terminalTab is {applescript_string(tty)} then
+        set current settings of terminalTab to settings set {applescript_string(name)}
+        return
+      end if
+    end repeat
+  end repeat
+end tell
+"""
+    run_applescript(script)
+
+
+def select_theme(themes: dict[str, Path]) -> str | None:
+    records = []
+    for name, generic_path in themes.items():
+        parsed = colors_from_theme(generic_path)
+        if parsed is None:
+            continue
+        colors, _, _ = parsed
+        records.append(f"{name}\t{blocks(colors[:8])} {blocks(colors[8:])}")
+    result = subprocess.run(
+        [
+            "fzf",
+            "--ansi",
+            "--delimiter=\t",
+            "--with-nth=1,2",
+            "--prompt=Theme > ",
+            "--height=90%",
+            "--layout=reverse",
+            "--border=rounded",
+            "--preview=" + shlex.quote(str(Path(__file__).resolve())) + " --preview {1}",
+            "--preview-window=up:55%:wrap:border-bottom",
+        ],
+        input="\n".join(records),
+        text=True,
+        capture_output=True,
+        check=False,
+    )
+    if result.returncode:
+        return None
+    return result.stdout.split("\t", 1)[0]
+
+
+def main() -> int:
+    if len(sys.argv) == 3 and sys.argv[1] == "--preview":
+        print(theme_preview(sys.argv[2]))
+        return 0
+
+    themes = {
+        path.stem: path
+        for path in GENERIC_THEMES.glob("*.sh")
+        if (TERMINAL_THEMES / f"{path.stem}.terminal").is_file()
+    }
+    if not themes:
+        print("No Terminal themes were found.", file=sys.stderr)
+        return 1
+
+    try:
+        tty = terminal_tab_tty()
+        selected = select_theme(themes)
+        if not selected:
+            return 0
+        install_profile(selected, TERMINAL_THEMES / f"{selected}.terminal")
+        apply_profile(selected, tty)
+        print(f"Applied {selected}.")
+        return 0
+    except RuntimeError as error:
+        print(f"Theme picker: {error}", file=sys.stderr)
+        return 1
+
+
+if __name__ == "__main__":
+    raise SystemExit(main())
