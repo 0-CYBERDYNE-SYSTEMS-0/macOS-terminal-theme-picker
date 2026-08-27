@@ -1,3 +1,4 @@
-vendor/
 build/
 __pycache__/
+.DS_Store
+com.scrimwiggins.terminal-theme-picker-agent.plist

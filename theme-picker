@@ -50,27 +50,46 @@ def color_block(color: str, width: int = 18) -> str:
     return f"{ANSI}48;2;{red};{green};{blue}m{' ' * width}{ANSI}0m"
 
 
+def high_contrast_color(background: str) -> str:
+    red, green, blue = (int(background[index:index + 2], 16) / 255 for index in (0, 2, 4))
+    luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+    return "000000" if luminance > 0.55 else "ffffff"
+
+
 def theme_preview(name: str) -> str:
     parsed = colors_from_theme(GENERIC_THEMES / f"{name}.sh")
     if parsed is None:
         return "Theme preview is not available."
 
     colors, foreground, background = parsed
+    contrast = high_contrast_color(background)
     foreground_red, foreground_green, foreground_blue = (
         int(foreground[index:index + 2], 16) for index in (0, 2, 4)
     )
     background_red, background_green, background_blue = (
         int(background[index:index + 2], 16) for index in (0, 2, 4)
     )
-    sample = (
-        f"{ANSI}48;2;{background_red};{background_green};{background_blue};"
-        f"38;2;{foreground_red};{foreground_green};{foreground_blue}m"
-        "  $ printf 'Readable sample text and color output'                       "
-        f"{ANSI}0m"
-    )
+    def syntax_line(parts: list[tuple[str, str]]) -> str:
+        output = [f"{ANSI}48;2;{background_red};{background_green};{background_blue}m  "]
+        for text, value in parts:
+            red, green, blue = (int(value[index:index + 2], 16) for index in (0, 2, 4))
+            output.append(f"{ANSI}38;2;{red};{green};{blue}m{text}")
+        output.append(f"{ANSI}0m")
+        return "".join(output)
+
+    syntax = [
+        syntax_line([("# Theme syntax preview", colors[8])]),
+        syntax_line([("class", colors[1]), (" ThemePreview", foreground), (":", colors[6])]),
+        syntax_line([("    ", foreground), ("def", colors[1]), (" render", colors[4]), ("(", colors[6]), ("accent", foreground), (": ", colors[6]), ("str", colors[3]), (") -> ", colors[6]), ("None", colors[3]), (":", colors[6])]),
+        syntax_line([("        colors ", foreground), ("=", colors[6]), (" 16", colors[5]), (" + ", colors[6]), ("26", colors[5])]),
+        syntax_line([("        ", foreground), ("print", colors[4]), ("(", colors[6]), ('f"theme={accent} colors={colors}"', colors[2]), (")", colors[6])]),
+        syntax_line([("        ", foreground), ("return", colors[1]), (" {", colors[6]), ('"background"', colors[2]), (": ", colors[6]), ('"#1f1f28"', colors[5]), ("}", colors[6])]),
+    ]
     return "\n".join(
         [
-            f"  Theme: {name}",
+            f"{ANSI}48;2;{background_red};{background_green};{background_blue};38;2;"
+            f"{int(contrast[0:2], 16)};{int(contrast[2:4], 16)};{int(contrast[4:6], 16)}m"
+            f"  Theme: {name}  {ANSI}0m",
             "",
             f"  Background  {color_block(background)}  #{background.upper()}",
             f"  Text        {color_block(foreground)}  #{foreground.upper()}",
@@ -79,7 +98,7 @@ def theme_preview(name: str) -> str:
             f"  Normal      {blocks(colors[:8])}",
             f"  Bright      {blocks(colors[8:])}",
             "",
-            f"  {sample}",
+            *[f"  {line}" for line in syntax],
         ]
     )
 

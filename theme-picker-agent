@@ -1,0 +1,387 @@
+#!/usr/bin/env python3
+"""Global Apple Terminal theme picker with a live AppKit preview."""
+
+from __future__ import annotations
+
+import re
+import subprocess
+import sys
+import time
+from pathlib import Path
+
+import objc
+import Quartz
+
+from AppKit import (
+    NSApp,
+    NSApplication,
+    NSApplicationActivationPolicyAccessory,
+    NSAttributedString,
+    NSBezierPath,
+    NSButton,
+    NSColor,
+    NSFont,
+    NSFontAttributeName,
+    NSForegroundColorAttributeName,
+    NSImage,
+    NSIndexSet,
+    NSMakePoint,
+    NSMakeRect,
+    NSMenu,
+    NSMenuItem,
+    NSPanel,
+    NSRunningApplication,
+    NSScrollView,
+    NSSearchField,
+    NSStatusBar,
+    NSTextField,
+    NSTextView,
+    NSTableColumn,
+    NSTableView,
+    NSView,
+    NSWindowStyleMaskClosable,
+    NSWindowStyleMaskTitled,
+    NSWindowStyleMaskUtilityWindow,
+)
+from Foundation import NSObject
+
+
+ROOT = Path(__file__).resolve().parent
+GENERIC_THEMES = ROOT / "vendor" / "iTerm2-Color-Schemes" / "generic"
+TERMINAL_THEMES = ROOT / "vendor" / "iTerm2-Color-Schemes" / "terminal"
+P_KEYCODE = 35
+
+
+def event_tap_callback(proxy, event_type, event, agent):
+    if event_type in (Quartz.kCGEventTapDisabledByTimeout, Quartz.kCGEventTapDisabledByUserInput):
+        Quartz.CGEventTapEnable(agent.event_tap, True)
+        return event
+    if event_type != Quartz.kCGEventKeyDown:
+        return event
+    flags = Quartz.CGEventGetFlags(event)
+    required = Quartz.kCGEventFlagMaskAlternate | Quartz.kCGEventFlagMaskShift
+    keycode = Quartz.CGEventGetIntegerValueField(event, Quartz.kCGKeyboardEventKeycode)
+    if keycode == P_KEYCODE and flags & required == required:
+        # Do not change AppKit windows while Quartz is dispatching the key event.
+        # Queue this on the main application loop so the shortcut remains reliable
+        # after the panel closes and opens again.
+        agent.performSelectorOnMainThread_withObject_waitUntilDone_("showPicker:", None, False)
+        return None
+    return event
+
+
+class Theme:
+    def __init__(self, name: str, colors: list[str], foreground: str, background: str):
+        self.name = name
+        self.colors = colors
+        self.foreground = foreground
+        self.background = background
+
+
+def parse_theme(path: Path) -> Theme | None:
+    values: dict[int, str] = {}
+    foreground = "ffffff"
+    background = "000000"
+    for line in path.read_text(errors="replace").splitlines():
+        match = re.match(r'^put_template\s+(\d+)\s+"([0-9a-fA-F/]+)"', line)
+        if match:
+            values[int(match.group(1))] = match.group(2).replace("/", "")
+            continue
+        match = re.match(r'^color_(foreground|background)="([0-9a-fA-F/]+)"', line)
+        if match:
+            if match.group(1) == "foreground":
+                foreground = match.group(2).replace("/", "")
+            else:
+                background = match.group(2).replace("/", "")
+    if set(values) != set(range(16)):
+        return None
+    return Theme(path.stem, [values[index] for index in range(16)], foreground, background)
+
+
+def color(value: str) -> NSColor:
+    return NSColor.colorWithCalibratedRed_green_blue_alpha_(
+        int(value[0:2], 16) / 255,
+        int(value[2:4], 16) / 255,
+        int(value[4:6], 16) / 255,
+        1,
+    )
+
+
+def high_contrast_text(background: str) -> NSColor:
+    red, green, blue = (int(background[index:index + 2], 16) / 255 for index in (0, 2, 4))
+    luminance = 0.2126 * red + 0.7152 * green + 0.0722 * blue
+    return NSColor.blackColor() if luminance > 0.55 else NSColor.whiteColor()
+
+
+def run_applescript(script: str) -> str:
+    result = subprocess.run(["osascript", "-e", script], text=True, capture_output=True)
+    if result.returncode:
+        raise RuntimeError(result.stderr.strip() or "AppleScript failed")
+    return result.stdout.strip()
+
+
+def applescript_string(value: str) -> str:
+    return '"' + value.replace("\\", "\\\\").replace('"', '\\"') + '"'
+
+
+def terminal_tty() -> str:
+    return run_applescript('tell application "Terminal" to get tty of selected tab of front window')
+
+
+def profile_exists(name: str) -> bool:
+    return run_applescript(
+        f'tell application "Terminal" to return (exists settings set {applescript_string(name)})'
+    ) == "true"
+
+
+def install_and_apply(name: str, tty: str) -> None:
+    if not profile_exists(name):
+        subprocess.run(["open", "-g", "-a", "Terminal", str(TERMINAL_THEMES / f"{name}.terminal")], check=True)
+        for _ in range(25):
+            if profile_exists(name):
+                break
+            time.sleep(0.2)
+        else:
+            raise RuntimeError(f"Terminal did not import {name}.")
+    run_applescript(
+        f"""
+tell application "Terminal"
+  repeat with terminalWindow in windows
+    repeat with terminalTab in tabs of terminalWindow
+      if tty of terminalTab is {applescript_string(tty)} then
+        set current settings of terminalTab to settings set {applescript_string(name)}
+        return
+      end if
+    end repeat
+  end repeat
+end tell
+"""
+    )
+
+
+class Swatches(NSView):
+    def initWithColors_(self, values):
+        self = objc.super(Swatches, self).initWithFrame_(NSMakeRect(0, 0, 180, 28))
+        self.values = values
+        return self
+
+    def drawRect_(self, rect):
+        width = self.bounds().size.width / len(self.values)
+        for index, value in enumerate(self.values):
+            color(value).setFill()
+            NSBezierPath.fillRect_(NSMakeRect(index * width, 0, width, self.bounds().size.height))
+
+
+class Preview(NSView):
+    def initWithTheme_(self, theme):
+        self = objc.super(Preview, self).initWithFrame_(NSMakeRect(0, 0, 680, 320))
+        self.theme = theme
+        return self
+
+    def setTheme_(self, theme):
+        self.theme = theme
+        self.setNeedsDisplay_(True)
+
+    def draw_label(self, text, value, y):
+        attributes = {
+            NSFontAttributeName: NSFont.systemFontOfSize_(13),
+            NSForegroundColorAttributeName: high_contrast_text(self.theme.background),
+        }
+        NSAttributedString.alloc().initWithString_attributes_(text, attributes).drawAtPoint_(NSMakePoint(20, y))
+        color(value).setFill()
+        NSBezierPath.fillRect_(NSMakeRect(120, y - 2, 150, 18))
+        NSAttributedString.alloc().initWithString_attributes_(f"#{value.upper()}", attributes).drawAtPoint_(NSMakePoint(286, y))
+
+    def draw_syntax_line(self, parts, y):
+        x = 20
+        for text, value in parts:
+            attributes = {
+                NSFontAttributeName: NSFont.monospacedSystemFontOfSize_weight_(13, 0),
+                NSForegroundColorAttributeName: color(value),
+            }
+            fragment = NSAttributedString.alloc().initWithString_attributes_(text, attributes)
+            fragment.drawAtPoint_(NSMakePoint(x, y))
+            x += fragment.size().width
+
+    def drawRect_(self, rect):
+        color(self.theme.background).setFill()
+        NSBezierPath.fillRect_(self.bounds())
+        title = {
+            NSFontAttributeName: NSFont.boldSystemFontOfSize_(20),
+            NSForegroundColorAttributeName: high_contrast_text(self.theme.background),
+        }
+        NSAttributedString.alloc().initWithString_attributes_(self.theme.name, title).drawAtPoint_(NSMakePoint(20, 310))
+        self.draw_label("Background", self.theme.background, 270)
+        self.draw_label("Text", self.theme.foreground, 240)
+        self.draw_label("ANSI white", self.theme.colors[7], 210)
+        swatch_width = 28
+        for offset, value in enumerate(self.theme.colors):
+            color(value).setFill()
+            row = 0 if offset < 8 else 1
+            column = offset % 8
+            NSBezierPath.fillRect_(NSMakeRect(120 + column * swatch_width, 175 - row * 24, 24, 16))
+        syntax_lines = [
+            [("# Theme syntax preview", self.theme.colors[8])],
+            [("class", self.theme.colors[1]), (" ThemePreview", self.theme.foreground), (":", self.theme.colors[6])],
+            [("    ", self.theme.foreground), ("def", self.theme.colors[1]), (" render", self.theme.colors[4]), ("(", self.theme.colors[6]), ("accent", self.theme.foreground), (": ", self.theme.colors[6]), ("str", self.theme.colors[3]), (") -> ", self.theme.colors[6]), ("None", self.theme.colors[3]), (":", self.theme.colors[6])],
+            [("        colors ", self.theme.foreground), ("=", self.theme.colors[6]), (" 16", self.theme.colors[5]), (" + ", self.theme.colors[6]), ("26", self.theme.colors[5])],
+            [("        ", self.theme.foreground), ("print", self.theme.colors[4]), ("(", self.theme.colors[6]), ('f"theme={accent} colors={colors}"', self.theme.colors[2]), (")", self.theme.colors[6])],
+            [("        ", self.theme.foreground), ("return", self.theme.colors[1]), (" {", self.theme.colors[6]), ('"background"', self.theme.colors[2]), (": ", self.theme.colors[6]), ('"#1f1f28"', self.theme.colors[5]), ("}", self.theme.colors[6])],
+        ]
+        for index, parts in enumerate(syntax_lines):
+            self.draw_syntax_line(parts, 120 - index * 16)
+
+
+class Agent(NSObject):
+    def applicationDidFinishLaunching_(self, notification):
+        self.themes = sorted(
+            filter(None, (parse_theme(path) for path in GENERIC_THEMES.glob("*.sh"))),
+            key=lambda theme: theme.name.casefold(),
+        )
+        self.filtered = self.themes
+        self.target_tty = None
+        self.make_menu()
+        self.make_panel()
+        self.install_hotkey()
+
+    def make_menu(self):
+        self.status = NSStatusBar.systemStatusBar().statusItemWithLength_(-1)
+        self.menu_icon = NSImage.imageWithSystemSymbolName_accessibilityDescription_(
+            "paintpalette", "Terminal Theme Picker"
+        )
+        self.menu_icon.setTemplate_(True)
+        self.status.button().setImage_(self.menu_icon)
+        self.status.button().setTitle_("")
+        menu = NSMenu.alloc().init()
+        open_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Open Theme Picker", "showPicker:", "")
+        open_item.setTarget_(self)
+        menu.addItem_(open_item)
+        menu.addItem_(NSMenuItem.separatorItem())
+        quit_item = NSMenuItem.alloc().initWithTitle_action_keyEquivalent_("Quit Theme Picker", "quit:", "")
+        quit_item.setTarget_(self)
+        menu.addItem_(quit_item)
+        self.status.setMenu_(menu)
+
+    def make_panel(self):
+        style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
+        self.panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(NSMakeRect(0, 0, 920, 600), style, 2, False)
+        self.panel.setTitle_("Terminal Theme Picker")
+        self.panel.setReleasedWhenClosed_(False)
+        content = self.panel.contentView()
+
+        self.search = NSSearchField.alloc().initWithFrame_(NSMakeRect(20, 555, 360, 28))
+        self.search.setPlaceholderString_("Search 606 themes")
+        self.search.setDelegate_(self)
+        content.addSubview_(self.search)
+
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 20, 360, 525))
+        scroll.setHasVerticalScroller_(True)
+        self.table = NSTableView.alloc().initWithFrame_(scroll.bounds())
+        column = NSTableColumn.alloc().initWithIdentifier_("theme")
+        column.setWidth_(340)
+        self.table.addTableColumn_(column)
+        self.table.setHeaderView_(None)
+        self.table.setDataSource_(self)
+        self.table.setDelegate_(self)
+        self.table.setRowHeight_(46)
+        self.table.setTarget_(self)
+        self.table.setDoubleAction_("applySelected:")
+        scroll.setDocumentView_(self.table)
+        content.addSubview_(scroll)
+
+        self.preview = Preview.alloc().initWithTheme_(self.themes[0])
+        self.preview.setFrame_(NSMakeRect(400, 190, 500, 350))
+        content.addSubview_(self.preview)
+
+        self.apply = NSButton.alloc().initWithFrame_(NSMakeRect(760, 135, 140, 32))
+        self.apply.setTitle_("Apply Theme")
+        self.apply.setTarget_(self)
+        self.apply.setAction_("applySelected:")
+        content.addSubview_(self.apply)
+        self.message = NSTextField.labelWithString_("Option-Shift-P opens this picker.")
+        self.message.setFrame_(NSMakeRect(400, 140, 350, 24))
+        content.addSubview_(self.message)
+        self.table.selectRowIndexes_byExtendingSelection_(NSIndexSet.indexSetWithIndex_(0), False)
+
+    def install_hotkey(self):
+        self.event_tap = Quartz.CGEventTapCreate(
+            Quartz.kCGSessionEventTap,
+            Quartz.kCGHeadInsertEventTap,
+            Quartz.kCGEventTapOptionDefault,
+            Quartz.CGEventMaskBit(Quartz.kCGEventKeyDown),
+            event_tap_callback,
+            self,
+        )
+        if self.event_tap is None:
+            self.message.setStringValue_("Grant Accessibility access to enable Option-Shift-P.")
+            return
+        self.event_source = Quartz.CFMachPortCreateRunLoopSource(None, self.event_tap, 0)
+        Quartz.CFRunLoopAddSource(
+            Quartz.CFRunLoopGetCurrent(), self.event_source, Quartz.kCFRunLoopCommonModes
+        )
+        Quartz.CGEventTapEnable(self.event_tap, True)
+
+    def showPicker_(self, sender):
+        try:
+            self.target_tty = terminal_tty()
+            self.message.setStringValue_("Target: " + self.target_tty)
+        except RuntimeError:
+            self.target_tty = None
+            self.message.setStringValue_("Open Apple Terminal, then use the picker.")
+        self.panel.center()
+        self.panel.makeKeyAndOrderFront_(None)
+        NSApp.activateIgnoringOtherApps_(True)
+
+    def controlTextDidChange_(self, notification):
+        query = self.search.stringValue().casefold()
+        self.filtered = [theme for theme in self.themes if query in theme.name.casefold()]
+        self.table.reloadData()
+        if self.filtered:
+            self.table.selectRowIndexes_byExtendingSelection_(NSIndexSet.indexSetWithIndex_(0), False)
+            self.preview.setTheme_(self.filtered[0])
+
+    def numberOfRowsInTableView_(self, table):
+        return len(self.filtered)
+
+    def tableView_viewForTableColumn_row_(self, table, column, row):
+        theme = self.filtered[row]
+        view = NSView.alloc().initWithFrame_(NSMakeRect(0, 0, 340, 46))
+        name = NSTextField.labelWithString_(theme.name)
+        name.setFrame_(NSMakeRect(8, 22, 320, 18))
+        view.addSubview_(name)
+        swatches = Swatches.alloc().initWithColors_(theme.colors)
+        swatches.setFrame_(NSMakeRect(8, 5, 240, 12))
+        view.addSubview_(swatches)
+        return view
+
+    def tableViewSelectionDidChange_(self, notification):
+        row = self.table.selectedRow()
+        if row >= 0 and row < len(self.filtered):
+            self.preview.setTheme_(self.filtered[row])
+
+    def applySelected_(self, sender):
+        row = self.table.selectedRow()
+        if self.target_tty is None or row < 0:
+            self.message.setStringValue_("No Terminal tab is selected.")
+            return
+        theme = self.filtered[row]
+        try:
+            install_and_apply(theme.name, self.target_tty)
+            self.message.setStringValue_(f"Applied {theme.name} to {self.target_tty}.")
+        except RuntimeError as error:
+            self.message.setStringValue_(str(error))
+
+    def quit_(self, sender):
+        NSApp.terminate_(None)
+
+
+def main():
+    app = NSApplication.sharedApplication()
+    app.setActivationPolicy_(NSApplicationActivationPolicyAccessory)
+    agent = Agent.alloc().init()
+    app.setDelegate_(agent)
+    app.run()
+
+
+if __name__ == "__main__":
+    main()
