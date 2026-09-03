@@ -25,7 +25,7 @@ def main() -> int:
     PLIST.parent.mkdir(parents=True, exist_ok=True)
     document = {
         "Label": LABEL,
-        "ProgramArguments": [str(Path(sys.executable).resolve()), str(ROOT / "theme-picker-agent")],
+        "ProgramArguments": [sys.executable, str(ROOT / "theme-picker-agent")],
         "RunAtLoad": True,
         "KeepAlive": True,
         "StandardOutPath": str(LOG),
