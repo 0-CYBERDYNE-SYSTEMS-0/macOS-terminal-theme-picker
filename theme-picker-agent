@@ -57,6 +57,7 @@ HOTKEY_SIGNATURE = int.from_bytes(b"TTPK", "big")
 SHIFT_KEY = 1 << 9
 OPTION_KEY = 1 << 11
 HOTKEY_EXCLUSIVE = 1
+RETURN_KEYCODES = (36, 76)
 
 
 class EventTypeSpec(ctypes.Structure):
@@ -249,6 +250,14 @@ class Preview(NSView):
             self.draw_syntax_line(parts, 120 - index * 16)
 
 
+class ThemeTableView(NSTableView):
+    def keyDown_(self, event):
+        if event.keyCode() in RETURN_KEYCODES:
+            self.sendAction_to_(self.doubleAction(), self.target())
+            return
+        objc.super(ThemeTableView, self).keyDown_(event)
+
+
 class Agent(NSObject):
     def applicationDidFinishLaunching_(self, notification):
         self.themes = sorted(
@@ -293,7 +302,7 @@ class Agent(NSObject):
 
         scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 20, 360, 525))
         scroll.setHasVerticalScroller_(True)
-        self.table = NSTableView.alloc().initWithFrame_(scroll.bounds())
+        self.table = ThemeTableView.alloc().initWithFrame_(scroll.bounds())
         column = NSTableColumn.alloc().initWithIdentifier_("theme")
         column.setWidth_(340)
         self.table.addTableColumn_(column)
