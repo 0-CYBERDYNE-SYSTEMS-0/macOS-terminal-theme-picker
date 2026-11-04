@@ -26,8 +26,9 @@ You need macOS, Apple Terminal, Python 3, and [fzf](https://github.com/junegunn/
 ```sh
 git clone --recurse-submodules https://github.com/0-CYBERDYNE-SYSTEMS-0/macOS-terminal-theme-picker.git
 cd macOS-terminal-theme-picker
-python3 -m pip install -r requirements.txt
-python3 install.py
+python3 -m venv .venv
+.venv/bin/python -m pip install -r requirements.txt
+.venv/bin/python install.py
 ```
 
 The installer creates a per-user LaunchAgent. The small palette icon in the menu bar also opens the picker.
@@ -36,7 +37,9 @@ The installer creates a per-user LaunchAgent. The small palette icon in the menu
 
 1. Select the Apple Terminal tab that you want to change.
 2. Press `Option-Shift-P`.
-3. Search, select a theme, and select **Apply Theme**.
+3. Search by name (multiple words work), select a theme, and select **Apply Theme**.
+
+Use the arrow keys while searching to browse results, Return to apply, and Escape to close. The result count and empty state keep your search clear. **Test Colors** opens a separate Terminal window running `msgcat --color=test` when gettext is installed. Apply is enabled when a Terminal tab and theme are selected.
 
 The target application can keep running. The picker changes its Terminal tab without sending text to that application.
 
@@ -59,3 +62,7 @@ This project includes [iTerm2-Color-Schemes](https://github.com/mbadolato/iTerm2
 ## License
 
 The picker code and the graphic are [MIT licensed](LICENSE). The theme catalog keeps its own license and attribution.
+
+## Verification
+
+Run `.venv/bin/python -m unittest discover -s tests -v` for catalog and native UI checks. GitHub Actions runs these checks and Python compilation on macOS for pushes and pull requests.

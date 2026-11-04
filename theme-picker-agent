@@ -32,6 +32,7 @@ from AppKit import (
     NSPanel,
     NSRunningApplication,
     NSScrollView,
+    NSBezelStyleRounded,
     NSSearchField,
     NSStatusBar,
     NSTextField,
@@ -152,7 +153,7 @@ def profile_exists(name: str) -> bool:
     ) == "true"
 
 
-def install_and_apply(name: str, tty: str) -> None:
+def ensure_profile(name: str) -> None:
     if not profile_exists(name):
         subprocess.run(["open", "-g", "-a", "Terminal", str(TERMINAL_THEMES / f"{name}.terminal")], check=True)
         for _ in range(25):
@@ -161,6 +162,10 @@ def install_and_apply(name: str, tty: str) -> None:
             time.sleep(0.2)
         else:
             raise RuntimeError(f"Terminal did not import {name}.")
+
+
+def install_and_apply(name: str, tty: str) -> None:
+    ensure_profile(name)
     run_applescript(
         f"""
 tell application "Terminal"
@@ -172,6 +177,24 @@ tell application "Terminal"
       end if
     end repeat
   end repeat
+end tell
+"""
+    )
+
+
+def open_color_test(name: str) -> None:
+    ensure_profile(name)
+    command = (
+        'if command -v msgcat >/dev/null 2>&1; then msgcat --color=test; '
+        'else echo "msgcat is not installed. Install gettext first."; fi'
+    )
+    run_applescript(
+        f"""
+tell application "Terminal"
+  activate
+  set testTab to do script ""
+  set current settings of testTab to settings set {applescript_string(name)}
+  do script {applescript_string(command)} in testTab
 end tell
 """
     )
@@ -194,6 +217,9 @@ class Preview(NSView):
     def initWithTheme_(self, theme):
         self = objc.super(Preview, self).initWithFrame_(NSMakeRect(0, 0, 680, 320))
         self.theme = theme
+        self.setWantsLayer_(True)
+        self.layer().setCornerRadius_(12)
+        self.layer().setMasksToBounds_(True)
         return self
 
     def setTheme_(self, theme):
@@ -290,17 +316,27 @@ class Agent(NSObject):
 
     def make_panel(self):
         style = NSWindowStyleMaskTitled | NSWindowStyleMaskClosable | NSWindowStyleMaskUtilityWindow
-        self.panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(NSMakeRect(0, 0, 920, 600), style, 2, False)
+        self.panel = NSPanel.alloc().initWithContentRect_styleMask_backing_defer_(NSMakeRect(0, 0, 920, 660), style, 2, False)
         self.panel.setTitle_("Terminal Theme Picker")
         self.panel.setReleasedWhenClosed_(False)
         content = self.panel.contentView()
+        heading = NSTextField.labelWithString_("Find your terminal’s next look")
+        heading.setFont_(NSFont.boldSystemFontOfSize_(22))
+        heading.setFrame_(NSMakeRect(20, 606, 880, 30))
+        content.addSubview_(heading)
+        subtitle = NSTextField.labelWithString_("Browse the full collection. Preview every color. Apply to your selected tab.")
+        subtitle.setTextColor_(NSColor.secondaryLabelColor())
+        subtitle.setFrame_(NSMakeRect(20, 580, 880, 22))
+        content.addSubview_(subtitle)
 
         self.search = NSSearchField.alloc().initWithFrame_(NSMakeRect(20, 555, 360, 28))
-        self.search.setPlaceholderString_("Search 606 themes")
+        self.search.setPlaceholderString_(f"Search {len(self.themes):,} themes")
+        self.search.setSendsSearchStringImmediately_(True)
+        self.search.setAccessibilityLabel_("Search themes")
         self.search.setDelegate_(self)
         content.addSubview_(self.search)
 
-        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 20, 360, 525))
+        scroll = NSScrollView.alloc().initWithFrame_(NSMakeRect(20, 48, 360, 497))
         scroll.setHasVerticalScroller_(True)
         self.table = ThemeTableView.alloc().initWithFrame_(scroll.bounds())
         column = NSTableColumn.alloc().initWithIdentifier_("theme")
@@ -315,18 +351,41 @@ class Agent(NSObject):
         scroll.setDocumentView_(self.table)
         content.addSubview_(scroll)
 
+        self.count = NSTextField.labelWithString_(f"{len(self.themes):,} themes")
+        self.count.setTextColor_(NSColor.secondaryLabelColor())
+        self.count.setFrame_(NSMakeRect(24, 19, 350, 22))
+        content.addSubview_(self.count)
+        self.empty = NSTextField.labelWithString_("No themes found. Try another search.")
+        self.empty.setFrame_(NSMakeRect(400, 350, 500, 30))
+        self.empty.setHidden_(True)
+        content.addSubview_(self.empty)
         self.preview = Preview.alloc().initWithTheme_(self.themes[0])
         self.preview.setFrame_(NSMakeRect(400, 190, 500, 350))
         content.addSubview_(self.preview)
 
         self.apply = NSButton.alloc().initWithFrame_(NSMakeRect(760, 135, 140, 32))
         self.apply.setTitle_("Apply Theme")
+        self.apply.setBezelStyle_(NSBezelStyleRounded)
         self.apply.setTarget_(self)
         self.apply.setAction_("applySelected:")
         content.addSubview_(self.apply)
+        self.color_test = NSButton.alloc().initWithFrame_(NSMakeRect(620, 135, 125, 32))
+        self.color_test.setTitle_("Test Colors")
+        self.color_test.setBezelStyle_(NSBezelStyleRounded)
+        self.color_test.setToolTip_("Open a new Terminal window and run msgcat --color=test with this theme.")
+        self.color_test.setTarget_(self)
+        self.color_test.setAction_("openColorTest:")
+        content.addSubview_(self.color_test)
         self.message = NSTextField.labelWithString_("Option-Shift-P opens this picker.")
-        self.message.setFrame_(NSMakeRect(400, 140, 350, 24))
+        self.message.setFrame_(NSMakeRect(400, 86, 500, 40))
+        self.message.setTextColor_(NSColor.secondaryLabelColor())
+        self.message.setMaximumNumberOfLines_(2)
         content.addSubview_(self.message)
+        guidance = NSTextField.labelWithString_("↑ ↓ Browse   •   Return Apply   •   Esc Close   •   ⌥⇧P Open")
+        guidance.setFont_(NSFont.systemFontOfSize_(11))
+        guidance.setTextColor_(NSColor.secondaryLabelColor())
+        guidance.setFrame_(NSMakeRect(400, 24, 500, 22))
+        content.addSubview_(guidance)
         self.table.selectRowIndexes_byExtendingSelection_(NSIndexSet.indexSetWithIndex_(0), False)
 
     def install_hotkey(self):
@@ -371,14 +430,47 @@ class Agent(NSObject):
         self.panel.center()
         self.panel.makeKeyAndOrderFront_(None)
         NSApp.activateIgnoringOtherApps_(True)
+        self.panel.makeFirstResponder_(self.search)
+        self.update_actions()
+
+    def update_actions(self):
+        valid = 0 <= self.table.selectedRow() < len(self.filtered)
+        self.apply.setEnabled_(valid and self.target_tty is not None)
+        self.color_test.setEnabled_(valid)
 
     def controlTextDidChange_(self, notification):
-        query = self.search.stringValue().casefold()
-        self.filtered = [theme for theme in self.themes if query in theme.name.casefold()]
+        row = self.table.selectedRow()
+        selected = self.filtered[row].name if 0 <= row < len(self.filtered) else None
+        words = self.search.stringValue().casefold().split()
+        self.filtered = [theme for theme in self.themes if all(word in theme.name.casefold() for word in words)]
         self.table.reloadData()
+        self.count.setStringValue_(f"{len(self.filtered):,} of {len(self.themes):,} themes")
+        self.preview.setHidden_(not self.filtered)
+        self.empty.setHidden_(bool(self.filtered))
         if self.filtered:
-            self.table.selectRowIndexes_byExtendingSelection_(NSIndexSet.indexSetWithIndex_(0), False)
-            self.preview.setTheme_(self.filtered[0])
+            index = next((i for i, theme in enumerate(self.filtered) if theme.name == selected), 0)
+            self.table.selectRowIndexes_byExtendingSelection_(NSIndexSet.indexSetWithIndex_(index), False)
+            self.table.scrollRowToVisible_(index)
+            self.preview.setTheme_(self.filtered[index])
+        self.update_actions()
+
+    def control_textView_doCommandBySelector_(self, control, text_view, command):
+        if control is not self.search:
+            return False
+        if isinstance(command, bytes):
+            command = command.decode()
+        if command == "insertNewline:":
+            self.applySelected_(control)
+            return True
+        if command == "cancelOperation:":
+            self.panel.orderOut_(None)
+            return True
+        if command in ("moveDown:", "moveUp:") and self.filtered:
+            row = max(0, min(len(self.filtered) - 1, self.table.selectedRow() + (1 if command == "moveDown:" else -1)))
+            self.table.selectRowIndexes_byExtendingSelection_(NSIndexSet.indexSetWithIndex_(row), False)
+            self.table.scrollRowToVisible_(row)
+            return True
+        return False
 
     def numberOfRowsInTableView_(self, table):
         return len(self.filtered)
@@ -398,17 +490,30 @@ class Agent(NSObject):
         row = self.table.selectedRow()
         if row >= 0 and row < len(self.filtered):
             self.preview.setTheme_(self.filtered[row])
+        self.update_actions()
+
+    def openColorTest_(self, sender):
+        row = self.table.selectedRow()
+        if row < 0 or row >= len(self.filtered):
+            self.message.setStringValue_("Select a theme first.")
+            return
+        theme = self.filtered[row]
+        try:
+            open_color_test(theme.name)
+            self.message.setStringValue_(f"Opened color test for {theme.name}.")
+        except (RuntimeError, subprocess.CalledProcessError) as error:
+            self.message.setStringValue_(str(error))
 
     def applySelected_(self, sender):
         row = self.table.selectedRow()
-        if self.target_tty is None or row < 0:
+        if self.target_tty is None or not 0 <= row < len(self.filtered):
             self.message.setStringValue_("No Terminal tab is selected.")
             return
         theme = self.filtered[row]
         try:
             install_and_apply(theme.name, self.target_tty)
             self.message.setStringValue_(f"Applied {theme.name} to {self.target_tty}.")
-        except RuntimeError as error:
+        except (RuntimeError, subprocess.CalledProcessError) as error:
             self.message.setStringValue_(str(error))
 
     def quit_(self, sender):
