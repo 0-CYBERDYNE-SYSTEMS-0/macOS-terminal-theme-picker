@@ -23,6 +23,7 @@ def main() -> int:
         return 1
 
     PLIST.parent.mkdir(parents=True, exist_ok=True)
+    LOG.parent.mkdir(parents=True, exist_ok=True)
     document = {
         "Label": LABEL,
         "ProgramArguments": [sys.executable, str(ROOT / "theme-picker-agent")],

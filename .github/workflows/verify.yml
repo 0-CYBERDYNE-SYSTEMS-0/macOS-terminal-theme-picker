@@ -1,0 +1,20 @@
+name: Verify macOS picker
+on:
+  push:
+  pull_request:
+permissions:
+  contents: read
+jobs:
+  verify:
+    runs-on: macos-latest
+    steps:
+      - uses: actions/checkout@v4
+        with:
+          submodules: recursive
+      - uses: actions/setup-python@v5
+        with:
+          python-version: '3.11'
+          cache: pip
+      - run: python -m pip install -r requirements.txt
+      - run: python -m py_compile theme-picker theme-picker-agent install.py
+      - run: python -m unittest discover -s tests -v
